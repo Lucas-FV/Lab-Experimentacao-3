@@ -3,7 +3,7 @@ import pandas as pd
 import time
 
 # Substitua pelo seu Personal Access Token
-GITHUB_TOKEN = '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'
+GITHUB_TOKEN = ''
 HEADERS = {"Authorization": f"Bearer {GITHUB_TOKEN}"}
 
 def get_top_repositories(total_repos=200):
