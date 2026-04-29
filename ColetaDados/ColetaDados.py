@@ -2,16 +2,18 @@ import requests
 import pandas as pd
 from datetime import datetime
 import time
+import sys
 
-# Substitua pelo seu Personal Access Token
-GITHUB_TOKEN = 'SEU_TOKEN_AQUI'
+# Substitua pelo seu Personal Access Token (Classic) com permissão 'public_repo'
+GITHUB_TOKEN = ''
 HEADERS = {"Authorization": f"Bearer {GITHUB_TOKEN}"}
 
 # Query parametrizada para buscar PRs de um repositório específico
+# Reduzido de 100 para 40 para evitar o erro 502 Bad Gateway
 PR_QUERY = """
 query($owner: String!, $name: String!, $cursor: String) {
   repository(owner: $owner, name: $name) {
-    pullRequests(first: 100, states: [MERGED, CLOSED], orderBy: {field: CREATED_AT, direction: DESC}, after: $cursor) {
+    pullRequests(first: 40, states: [MERGED, CLOSED], orderBy: {field: CREATED_AT, direction: DESC}, after: $cursor) {
       pageInfo {
         endCursor
         hasNextPage
@@ -42,12 +44,21 @@ def extract_prs_from_repo(owner, name, max_prs=150):
         variables = {"owner": owner, "name": name, "cursor": cursor}
         response = requests.post('https://api.github.com/graphql', json={'query': PR_QUERY, 'variables': variables}, headers=HEADERS)
         
+        # Tratamento atualizado para erros de servidor (como o 502)
         if response.status_code != 200:
-            print(f"Erro ao acessar {owner}/{name}. Pulando...")
+            print(f"\n[!] Erro {response.status_code} no servidor do GitHub ao acessar {owner}/{name}.")
+            print("O repositório pode estar muito pesado ou indisponível no momento. Pulando para o próximo...")
             break
             
-        data = response.json()
-        if 'errors' in data or not data['data']['repository']:
+        # Tratamento de erro caso o retorno não seja um JSON válido (ex: página HTML de erro do Nginx)
+        try:
+            data = response.json()
+        except ValueError:
+            print(f"\n[!] O GitHub não retornou um JSON válido para {owner}/{name}. Pulando...")
+            break
+            
+        if 'errors' in data or not data.get('data') or not data['data'].get('repository'):
+            print(f"  -> Repositório não encontrado ou erro na query. Pulando...")
             break
             
         pr_nodes = data['data']['repository']['pullRequests']
@@ -89,22 +100,39 @@ def extract_prs_from_repo(owner, name, max_prs=150):
             
     return prs_data
 
-# Execução principal do Membro 2
+# Execução principal
 print("Lendo a lista de repositórios...")
-df_repos = pd.read_csv('repositorios.csv')
+
+# Melhoria: Validação do caminho do arquivo CSV
+try:
+    df_repos = pd.read_csv('../Repositories/repositorios.csv')
+except FileNotFoundError:
+    print("ERRO: O arquivo '../Repositories/repositorios.csv' não foi encontrado.")
+    print("Verifique se você está rodando o script de dentro da pasta 'ColetaDados' e se o CSV existe.")
+    sys.exit()
+
 dataset_final = []
 
-# Iterando sobre a lista gerada pelo Membro 1
+# Iterando sobre a lista de repositórios
 for index, row in df_repos.iterrows():
-    repo_full_name = row['repositorio']
+    # Melhoria: Limpeza de espaços em branco invisíveis e garantia de que é uma string
+    repo_full_name = str(row['repositorio']).strip() 
+    
+    # Prevenção contra linhas vazias ou mal formatadas no CSV
+    if not repo_full_name or '/' not in repo_full_name:
+        continue
+        
     owner, name = repo_full_name.split('/')
     
-    print(f"[{index+1}/{len(df_repos)}] Coletando PRs de {repo_full_name}...")
+    print(f"[{index+1}/{len(df_repos)}] Coletando PRs de {owner}/{name}...")
     prs = extract_prs_from_repo(owner, name)
     dataset_final.extend(prs)
-    time.sleep(1) # Proteção contra rate limit
+    time.sleep(1) # Proteção contra rate limit da API
 
-# Salvando o dataset completo da Sprint 1 
-df_final = pd.DataFrame(dataset_final)
-df_final.to_csv('dataset_prs_lab03.csv', index=False)
-print(f"Coleta finalizada! Dataset gerado com {len(df_final)} PRs válidos.")
+# Salvando o dataset completo
+if dataset_final:
+    df_final = pd.DataFrame(dataset_final)
+    df_final.to_csv('dataset_prs_lab03.csv', index=False)
+    print(f"\nColeta finalizada com sucesso! Arquivo 'dataset_prs_lab03.csv' gerado com {len(df_final)} PRs válidos.")
+else:
+    print("\nNenhum PR válido foi extraído. Verifique os avisos acima.")
