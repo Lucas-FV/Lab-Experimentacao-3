@@ -3,17 +3,18 @@ import pandas as pd
 from datetime import datetime
 import time
 import sys
+import os
 
-# Substitua pelo seu Personal Access Token (Classic) com permissão 'public_repo'
+# Substitua pelo seu NOVO Personal Access Token (Classic) com permissão 'public_repo'
 GITHUB_TOKEN = ''
 HEADERS = {"Authorization": f"Bearer {GITHUB_TOKEN}"}
 
 # Query parametrizada para buscar PRs de um repositório específico
-# Reduzido de 100 para 40 para evitar o erro 502 Bad Gateway
+# Reduzido para 20 para evitar o erro de conexão cortada em repositórios muito pesados
 PR_QUERY = """
 query($owner: String!, $name: String!, $cursor: String) {
   repository(owner: $owner, name: $name) {
-    pullRequests(first: 40, states: [MERGED, CLOSED], orderBy: {field: CREATED_AT, direction: DESC}, after: $cursor) {
+    pullRequests(first: 20, states: [MERGED, CLOSED], orderBy: {field: CREATED_AT, direction: DESC}, after: $cursor) {
       pageInfo {
         endCursor
         hasNextPage
@@ -42,7 +43,16 @@ def extract_prs_from_repo(owner, name, max_prs=150):
     
     while len(prs_data) < max_prs:
         variables = {"owner": owner, "name": name, "cursor": cursor}
-        response = requests.post('https://api.github.com/graphql', json={'query': PR_QUERY, 'variables': variables}, headers=HEADERS)
+        
+        # Tratamento de rede para não quebrar o script se a conexão cair
+        try:
+            response = requests.post('https://api.github.com/graphql', json={'query': PR_QUERY, 'variables': variables}, headers=HEADERS, timeout=30)
+        except requests.exceptions.ChunkedEncodingError:
+            print(f"\n[!] Conexão cortada pelo GitHub (ChunkedEncodingError) em {owner}/{name}. Repositório muito pesado. Pulando...")
+            break
+        except requests.exceptions.RequestException as e:
+            print(f"\n[!] Falha de rede ao acessar {owner}/{name}: {e}. Pulando...")
+            break
         
         # Tratamento atualizado para erros de servidor (como o 502)
         if response.status_code != 200:
@@ -103,7 +113,7 @@ def extract_prs_from_repo(owner, name, max_prs=150):
 # Execução principal
 print("Lendo a lista de repositórios...")
 
-# Melhoria: Validação do caminho do arquivo CSV
+# Validação do caminho do arquivo CSV
 try:
     df_repos = pd.read_csv('../Repositories/repositorios.csv')
 except FileNotFoundError:
@@ -111,11 +121,16 @@ except FileNotFoundError:
     print("Verifique se você está rodando o script de dentro da pasta 'ColetaDados' e se o CSV existe.")
     sys.exit()
 
-dataset_final = []
+ARQUIVO_SAIDA = 'dataset_prs_lab03.csv'
+total_coletado = 0
+
+# Remove o arquivo de saída antigo se existir, para não misturar execuções
+if os.path.exists(ARQUIVO_SAIDA):
+    os.remove(ARQUIVO_SAIDA)
 
 # Iterando sobre a lista de repositórios
 for index, row in df_repos.iterrows():
-    # Melhoria: Limpeza de espaços em branco invisíveis e garantia de que é uma string
+    # Limpeza de espaços em branco invisíveis e garantia de que é uma string
     repo_full_name = str(row['repositorio']).strip() 
     
     # Prevenção contra linhas vazias ou mal formatadas no CSV
@@ -126,13 +141,14 @@ for index, row in df_repos.iterrows():
     
     print(f"[{index+1}/{len(df_repos)}] Coletando PRs de {owner}/{name}...")
     prs = extract_prs_from_repo(owner, name)
-    dataset_final.extend(prs)
+    
+    # SALVAMENTO CONTÍNUO: Salva no CSV a cada repositório concluído
+    if prs:
+        df_temp = pd.DataFrame(prs)
+        # O mode='a' anexa os dados. O header só é colocado na primeira vez.
+        df_temp.to_csv(ARQUIVO_SAIDA, mode='a', header=not os.path.exists(ARQUIVO_SAIDA), index=False)
+        total_coletado += len(prs)
+        
     time.sleep(1) # Proteção contra rate limit da API
 
-# Salvando o dataset completo
-if dataset_final:
-    df_final = pd.DataFrame(dataset_final)
-    df_final.to_csv('dataset_prs_lab03.csv', index=False)
-    print(f"\nColeta finalizada com sucesso! Arquivo 'dataset_prs_lab03.csv' gerado com {len(df_final)} PRs válidos.")
-else:
-    print("\nNenhum PR válido foi extraído. Verifique os avisos acima.")
+print(f"\nColeta finalizada com sucesso! Arquivo '{ARQUIVO_SAIDA}' gerado com {total_coletado} PRs válidos no total.")
